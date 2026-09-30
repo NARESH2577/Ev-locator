@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EV Charging Locator - Chennai</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root {
+      --bg: #f2f6f7; --ink: #10303a; --muted: #5d7480; --line: #d3dfe3;
+      --brand: #0a7c74; --fast: #e09a12; --panel: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: "Segoe UI", Roboto, Arial, sans-serif; color: var(--ink); background: var(--bg);
+           display: grid; grid-template-columns: 380px 1fr; }
+    aside { display: flex; flex-direction: column; min-height: 0; background: var(--panel);
+            border-right: 1px solid var(--line); }
+    header { padding: 20px 20px 12px; }
+    h1 { font-size: 1.35rem; margin: 0 0 4px; }
+    header p { margin: 0; color: var(--muted); font-size: .9rem; }
+    .controls { padding: 0 20px 14px; display: grid; gap: 10px; border-bottom: 1px solid var(--line); }
+    select, button { font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: #fff; }
+    button { background: var(--brand); color: #fff; border: 0; cursor: pointer; font-weight: 600; }
+    button:hover { filter: brightness(1.1); }
+    :focus-visible { outline: 3px solid #f5b83d; outline-offset: 2px; }
+    label.check { display: flex; gap: 8px; align-items: center; font-size: .92rem; }
+    #status { padding: 8px 20px; font-size: .85rem; color: var(--muted); }
+    #list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+    #list li { padding: 14px 20px; border-top: 1px solid var(--line); cursor: pointer; }
+    #list li:hover { background: #eef5f5; }
+    .name { font-weight: 600; }
+    .meta { font-size: .85rem; color: var(--muted); margin-top: 3px; }
+    .tag { display: inline-block; font-size: .75rem; padding: 2px 8px; border-radius: 999px;
+           background: #e3f1f0; color: var(--brand); margin-right: 4px; }
+    .tag.fast { background: #fbeccb; color: #8a5a00; }
+    #map { height: 100%; }
+    @media (max-width: 760px) {
+      body { grid-template-columns: 1fr; grid-template-rows: 55% 45%; }
+      #map { order: -1; } aside { border-right: 0; }
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <header>
+      <h1>EV charging near you</h1>
+      <p>Sample stations in Chennai</p>
+    </header>
+    <div class="controls">
+      <button id="locateBtn">Use my location</button>
+      <select id="connector" aria-label="Connector type">
+        <option value="">All connector types</option>
+        <option>CCS2</option>
+        <option>Type 2</option>
+        <option>CHAdeMO</option>
+      </select>
+      <label class="check"><input type="checkbox" id="fastOnly"> Fast chargers only (25 kW and above)</label>
+    </div>
+    <div id="status" role="status"></div>
+    <ul id="list"></ul>
+  </aside>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // ---- Map setup (centered on Chennai) ----
+    const map = L.map("map").setView([13.0300, 80.2200], 11);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    let userLocation = null;      // {lat, lng} once the user shares it
+    let userMarker = null;
+    const markerLayer = L.layerGroup().addTo(map);
+    const markersById = {};
+
+    const listEl = document.getElementById("list");
+    const statusEl = document.getElementById("status");
+
+    // ---- Load stations from the Python API ----
+    async function loadStations() {
+      const params = new URLSearchParams();
+      const connector = document.getElementById("connector").value;
+      if (connector) params.set("connector", connector);
+      if (document.getElementById("fastOnly").checked) params.set("fast_only", "true");
+      if (userLocation) { params.set("lat", userLocation.lat); params.set("lng", userLocation.lng); }
+
+      try {
+        const res = await fetch("/api/stations?" + params.toString());
+        render(await res.json());
+      } catch (err) {
+        statusEl.textContent = "Could not load stations. Is the Flask server running?";
+      }
+    }
+
+    // ---- Draw markers and the side list ----
+    function render(stations) {
+      markerLayer.clearLayers();
+      listEl.innerHTML = "";
+      statusEl.textContent = stations.length
+        ? stations.length + " station" + (stations.length > 1 ? "s" : "") + " found"
+        : "No stations match these filters. Try clearing one.";
+
+      stations.forEach(s => {
+        const dist = s.distance_km !== undefined ? s.distance_km + " km away" : s.area;
+        const directions = "https://www.google.com/maps/dir/?api=1&destination=" + s.lat + "," + s.lng;
+        const popup = "<b>" + s.name + "</b><br>" + s.area + "<br>" +
+          s.connectors.join(", ") + " &middot; " + s.power_kw + " kW<br>" +
+          "<a href='" + directions + "' target='_blank' rel='noopener'>Get directions</a>";
+
+        const marker = L.circleMarker([s.lat, s.lng], {
+          radius: 9, weight: 2, color: "#fff",
+          fillColor: s.is_fast ? "#e09a12" : "#0a7c74", fillOpacity: 1
+        }).bindPopup(popup).addTo(markerLayer);
+        markersById[s.id] = marker;
+
+        const li = document.createElement("li");
+        li.innerHTML =
+          "<div class='name'>" + s.name + "</div>" +
+          "<div class='meta'>" + dist + "</div>" +
+          "<div class='meta'>" +
+            s.connectors.map(c => "<span class='tag'>" + c + "</span>").join("") +
+            "<span class='tag" + (s.is_fast ? " fast" : "") + "'>" + s.power_kw + " kW</span>" +
+          "</div>";
+        li.onclick = () => { map.setView([s.lat, s.lng], 15); marker.openPopup(); };
+        listEl.appendChild(li);
+      });
+    }
+
+    // ---- Find the user's location ----
+    document.getElementById("locateBtn").onclick = () => {
+      if (!navigator.geolocation) { statusEl.textContent = "Your browser does not support location."; return; }
+      statusEl.textContent = "Finding your location...";
+      navigator.geolocation.getCurrentPosition(pos => {
+        userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        if (userMarker) map.removeLayer(userMarker);
+        userMarker = L.marker([userLocation.lat, userLocation.lng]).addTo(map).bindPopup("You are here");
+        map.setView([userLocation.lat, userLocation.lng], 12);
+        loadStations();
+      }, () => { statusEl.textContent = "Location blocked. Allow location access in your browser and try again."; });
+    };
+
+    document.getElementById("connector").onchange = loadStations;
+    document.getElementById("fastOnly").onchange = loadStations;
+    loadStations();
+  </script>
+</body>
+</html>
